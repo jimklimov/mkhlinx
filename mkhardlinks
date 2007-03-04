@@ -1,0 +1,25 @@
+#!/usr/bin/bash
+
+BASEDIR=/u01/s01/dvd/s0/Solaris_10/Product
+
+cd "$BASEDIR" || exit 1
+
+find . -type f -exec cksum '{}' \; > /tmp/sol10pkgs-cksum
+
+sort -n /tmp/sol10pkgs-cksum | awk '{ print $1" "$2 }' | uniq -c | sort -n | grep -v ' 1 ' | while
+	read COUNT CKSUM SIZE; do
+		echo "$COUNT $CKSUM $SIZE"
+		FIRSTFILE=""
+		cat /tmp/sol10pkgs-cksum | grep -w "$CKSUM" | while 
+			read CS SZ FILE; do 
+				if [ x"$FIRSTFILE" = x ]; then 
+					FIRSTFILE="$FILE"
+					echo "$FILE"
+				else
+					if [ x`diff "$FIRSTFILE" "$FILE" 2>&1` = x ]; then 
+						rm "$FILE" && ln "$FIRSTFILE" "$FILE"
+					fi
+				fi
+			done
+	done
+
