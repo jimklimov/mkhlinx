@@ -1,25 +1,155 @@
 #!/usr/bin/bash
 
-BASEDIR=/u01/s01/dvd/s0/Solaris_10/Product
+### This script deduplicates file archives by finding same files
+### and hardlinking them. (C) 2007-2009 by Jim Klimov, COS&HT
 
-cd "$BASEDIR" || exit 1
+### Predefine MKH_DEBUG=anything to skip actual removal and linking
 
-find . -type f -exec cksum '{}' \; > /tmp/sol10pkgs-cksum
+###    !!!     IT IS NOT INTENDED FOR HOME DIRECTORIES      !!!
+### and other files which are expected to change separately in future.
 
-sort -n /tmp/sol10pkgs-cksum | awk '{ print $1" "$2 }' | uniq -c | sort -n | grep -v ' 1 ' | while
-	read COUNT CKSUM SIZE; do
-		echo "$COUNT $CKSUM $SIZE"
-		FIRSTFILE=""
-		cat /tmp/sol10pkgs-cksum | grep -w "$CKSUM" | while 
-			read CS SZ FILE; do 
-				if [ x"$FIRSTFILE" = x ]; then 
-					FIRSTFILE="$FILE"
-					echo "$FILE"
-				else
-					if [ x`diff "$FIRSTFILE" "$FILE" 2>&1` = x ]; then 
-						rm "$FILE" && ln "$FIRSTFILE" "$FILE"
-					fi
-				fi
-			done
-	done
+### NOTE: The MKH_BASEDIR and all its subdirs MUST BE in the same
+### filesystem or dataset, so that hardlinks are possible.
+###      NO SPECIAL CHECKS ARE DONE DURING FILE REMOVAL!
+### Find command does use '-mount' to only find names in one filesystem,
+### and '-type f' to not follow symlinks, but things can happen...
 
+#MKH_BASEDIR=/u01/s01/dvd/s0/Solaris_10/Product
+[ "x$MKH_BASEDIR" = x ] && MKH_BASEDIR=/export/home/jim/sol10uX-COS
+
+### gdiff is much faster on Solaris (4x on sfv240 test), if available
+[ x"$DIFF" = x ] && DIFF='gdiff -q'
+### Sanity check - does the requested command exist?
+$DIFF "$0" "$0" || DIFF=''
+[ x"$DIFF" = x ] && DIFF='diff'
+
+### Values:
+###	no	skip metadata check (allow any files with same contents
+###		merge into one filesystem inode)
+###	owner	check if UID/GID/POSIX fields differ
+###	all	also check if date fields differ
+###	owner-acl	try to check UID/GID/POSIX and UFS/ZFS/NFSv4 ACLs
+###	all-acl		try to check UID/GID/POSIX/DATE and UFS/ZFS/NFSv4 ACLs
+[ x"$MKH_CONSIDER_METADATA" = x ] && MKH_CONSIDER_METADATA="owner"
+
+### variables
+RM='rm -f'
+LN='ln'
+if [ x"$MKH_DEBUG" != x ]; then
+    RM="echo ### $RM"
+    LN="echo ### $LN"
+fi
+
+[ x"$MKH_TEMPFILE" = x ] && MKH_TEMPFILE="/tmp/mkhardlinks-dedup-$$.tmp"
+
+###########################
+#### These funcs can become obsolete if tempfile format changes
+### (i.e. includes this data as output by "find -ls"
+getInode() {
+    ls -lani "$1" | awk '{print $1}'
+}
+getMeta() {
+    case x"$MKH_CONSIDER_METADATA" in
+	xowner)
+	    ls -lanid "$1" | awk '{print $2" "$4" "$5 }'
+	    ;;
+	xall)
+	    ls -lanid "$1" | awk '{print $2" "$4" "$5" "$6" "$7" "$8 }'
+	    ;;
+	xowner-acl)
+	    ls -lani "$1" | awk '{print $2" "$4" "$5 }'
+	    ls -lanidV "$1" | tail +2
+	    ;;
+	xall-acl)
+	    ls -lanid "$1" | awk '{print $2" "$4" "$5" "$6" "$7" "$8 }'
+	    ls -lanidV "$1" | tail +2
+	    ;;
+	xno|x*)	echo "" ;;
+    esac
+}
+###########################
+
+cd "$MKH_BASEDIR" || exit 1
+
+### Final sanity check
+$DIFF "$0" "$0" || exit 2
+
+### TODO: Perhaps provide some parallelism for multiCPU machines?
+### TODO: Perhaps skip some work for files already with hardlinks?
+[ -s "$MKH_TEMPFILE" ] || find . -mount -type f -exec cksum '{}' \; > "$MKH_TEMPFILE"
+
+sort -n "$MKH_TEMPFILE" | awk '{ print $1" "$2 }' | uniq -c | sort -n | grep -v ' 1 ' | {
+    COUNT_MERGED=0
+    COUNT_MERGEDSZ=0
+    COUNT_SKIPPED=0
+
+    while read COUNT CKSUM SIZE; do
+	echo "$COUNT $CKSUM $SIZE"
+	FIRSTFILE=""
+	cat "$MKH_TEMPFILE" | grep -w "$CKSUM" | while 
+	    read CS SZ FILE; do
+
+	        COUNT_MERGED="`head -1 "$MKH_TEMPFILE".nmrg`"
+	        COUNT_MERGEDSZ="`head -1 "$MKH_TEMPFILE".szmrg`"
+	        COUNT_SKIPPED="`head -1 "$MKH_TEMPFILE".nskip`"
+
+		if [ x"$FIRSTFILE" = x ]; then 
+		    ### TODO: work around differing files
+		    ### (includes metadata check) with same
+		    ### checksums.
+		    ### So far we're only comparing with first found filename
+			FIRSTFILE="$FILE"
+			FIRSTINODE="`getInode "$FILE"`"
+			FIRSTMETA="`getMeta "$FILE"`"
+			echo "($FIRSTINODE) $FILE"
+		else
+			### Files have same checksum
+			MERGE=yes
+
+			### Check inode numbers
+			if [ x"$MERGE" = xyes ]; then
+			    CURRINODE="`getInode "$FILE"`"
+			    [ x"$FIRSTINODE" = x"$CURRINODE" ] && \
+				MERGE="same inode $CURRINODE"
+			fi
+
+			### Check owners and access rights (maybe dates)
+			if [ x"$MERGE" = xyes ]; then
+			    CURRMETA="`getMeta "$FILE"`"
+			    [ x"$FIRSTMETA" != x"$CURRMETA" ] && \
+				MERGE="different metadata"
+			fi
+
+			### Check if their contents differ
+			if [ x"$MERGE" = xyes ]; then
+			    [ x`$DIFF "$FIRSTFILE" "$FILE" 2>&1` != x ] && \
+				MERGE="different contents or diff error"
+			fi
+
+			if [ "$MERGE" = yes ]; then
+			    $RM "$FILE" && \
+				$LN "$FIRSTFILE" "$FILE" && \
+				    COUNT_MERGED=$(($COUNT_MERGED+1)) && \
+				    COUNT_MERGEDSZ=$(($COUNT_MERGEDSZ+$SZ))
+			else
+			    echo "SKIP: $FILE not merged with $FIRSTFILE" >&2
+			    echo "      (reason: $MERGE)" >&2
+			    COUNT_SKIPPED=$(($COUNT_SKIPPED+1))
+			fi
+		fi
+
+	        echo "$COUNT_MERGED" > "$MKH_TEMPFILE".nmrg
+	        echo "$COUNT_MERGEDSZ" > "$MKH_TEMPFILE".szmrg
+	        echo "$COUNT_SKIPPED" > "$MKH_TEMPFILE".nskip
+
+	    done
+    done
+
+echo "===========
+Results:
+    Files skipped:	$COUNT_SKIPPED
+    Files merged:	$COUNT_MERGED
+    Space saved:	$COUNT_MERGEDSZ
+
+"
+}
