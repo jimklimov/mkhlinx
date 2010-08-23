@@ -1,12 +1,17 @@
 #!/usr/bin/bash
 
 ### This script deduplicates file archives by finding same files
-### and hardlinking them. (C) 2007-2009 by Jim Klimov, COS&HT
+### and hardlinking them. (C) 2007-2010 by Jim Klimov, COS&HT
+
+### Controlled by Env.Vars, see comments below:
+### MKH_BASEDIR   MKH_CONSIDER_METADATA   MKH_DEBUG  MKH_TEMPFILE
+### DIFF
 
 ### Predefine MKH_DEBUG=anything to skip actual removal and linking
 
 ###    !!!     IT IS NOT INTENDED FOR HOME DIRECTORIES      !!!
 ### and other files which are expected to change separately in future.
+### It is for Distros, photo archives, etc.
 
 ### NOTE: The MKH_BASEDIR and all its subdirs MUST BE in the same
 ### filesystem or dataset, so that hardlinks are possible.
@@ -26,7 +31,7 @@ $DIFF "$0" "$0" || DIFF=''
 ### Values:
 ###	no	skip metadata check (allow any files with same contents
 ###		merge into one filesystem inode)
-###	owner	check if UID/GID/POSIX fields differ
+###	owner	check if UID/GID/POSIX access rights fields differ
 ###	all	also check if date fields differ
 ###	owner-acl	try to check UID/GID/POSIX and UFS/ZFS/NFSv4 ACLs
 ###	all-acl		try to check UID/GID/POSIX/DATE and UFS/ZFS/NFSv4 ACLs
@@ -74,10 +79,32 @@ cd "$MKH_BASEDIR" || exit 1
 ### Final sanity check
 $DIFF "$0" "$0" || exit 2
 
+diags() {
+echo "Starting `date` with settings:"
+echo "	MKH_BASEDIR	= $MKH_BASEDIR"
+echo "	MKH_TEMPFILE	= $MKH_TEMPFILE `[ -s "$MKH_TEMPFILE" ] && echo '(exists)'`"
+echo "	MKH_CONSIDER_METADATA	= $MKH_CONSIDER_METADATA"
+echo "	MKH_DEBUG	= $MKH_DEBUG (RM='$RM', LN='$LN')"
+echo "	DIFF		= $DIFF"
+}
+
+diags | tee "$MKH_TEMPFILE.diaglog"
+df -k "$MKH_BASEDIR" | tee -a "$MKH_TEMPFILE.diaglog"
+
+trap "exit 0"  1 2 3 15
+
+echo "Sleeping 5 sec if you want to abort..."
+sleep 5
+
 ### TODO: Perhaps provide some parallelism for multiCPU machines?
 ### TODO: Perhaps skip some work for files already with hardlinks?
-[ -s "$MKH_TEMPFILE" ] || find . -mount -type f -exec cksum '{}' \; > "$MKH_TEMPFILE"
+if [ ! -s "$MKH_TEMPFILE" ]; then
+    echo "=== `date`: Creating MKH_TEMPFILE..." | tee -a "$MKH_TEMPFILE.diaglog"
+    find . -mount -type f -exec cksum '{}' \; > "$MKH_TEMPFILE"
+    echo "--- `date`: done" | tee -a "$MKH_TEMPFILE.diaglog"
+fi
 
+echo "=== `date`: Parsing MKH_TEMPFILE..." | tee -a "$MKH_TEMPFILE.diaglog"
 sort -n "$MKH_TEMPFILE" | awk '{ print $1" "$2 }' | uniq -c | sort -n | grep -v ' 1 ' | {
     COUNT_MERGED=0
     COUNT_MERGEDSZ=0
@@ -86,7 +113,7 @@ sort -n "$MKH_TEMPFILE" | awk '{ print $1" "$2 }' | uniq -c | sort -n | grep -v 
     while read COUNT CKSUM SIZE; do
 	echo "$COUNT $CKSUM $SIZE"
 	FIRSTFILE=""
-	cat "$MKH_TEMPFILE" | grep -w "$CKSUM" | while 
+	grep -w "$CKSUM" "$MKH_TEMPFILE" | while 
 	    read CS SZ FILE; do
 
 	        COUNT_MERGED="`head -1 "$MKH_TEMPFILE".nmrg`"
@@ -106,6 +133,19 @@ sort -n "$MKH_TEMPFILE" | awk '{ print $1" "$2 }' | uniq -c | sort -n | grep -v 
 			### Files have same checksum
 			MERGE=yes
 
+			### Check file sizes, can differ a lot with same weak checksum
+			if [ x"$MERGE" = xyes -a "$SZ" != "$SIZE" ]; then
+			    MERGE="different sizes"
+			fi
+
+			if [ x"$MERGE" = xyes -a "$SZ" = "0" ]; then
+			    MERGE="null file size"
+			fi
+
+			if [ x"$MERGE" = xyes -a "$CS" != "$CKSUM" ]; then
+			    MERGE="different checksums"
+			fi
+
 			### Check inode numbers
 			if [ x"$MERGE" = xyes ]; then
 			    CURRINODE="`getInode "$FILE"`"
@@ -122,15 +162,21 @@ sort -n "$MKH_TEMPFILE" | awk '{ print $1" "$2 }' | uniq -c | sort -n | grep -v 
 
 			### Check if their contents differ
 			if [ x"$MERGE" = xyes ]; then
-			    [ x`$DIFF "$FIRSTFILE" "$FILE" 2>&1` != x ] && \
+			    OUT="`$DIFF "$FIRSTFILE" "$FILE" 2>&1`"
+			    RET=$?
+			    [ x"$OUT" != x -o $RET != 0 ] && \
 				MERGE="different contents or diff error"
 			fi
 
 			if [ "$MERGE" = yes ]; then
+			    ### Unbreakable file mangling (don't want occasional
+			    ### Ctrl+C to delete a file with no trace)
+			    trap ""  1 2 3 15
 			    $RM "$FILE" && \
 				$LN "$FIRSTFILE" "$FILE" && \
 				    COUNT_MERGED=$(($COUNT_MERGED+1)) && \
 				    COUNT_MERGEDSZ=$(($COUNT_MERGEDSZ+$SZ))
+			    trap "exit 0"  1 2 3 15
 			else
 			    echo "SKIP: $FILE not merged with $FIRSTFILE" >&2
 			    echo "      (reason: $MERGE)" >&2
@@ -145,11 +191,15 @@ sort -n "$MKH_TEMPFILE" | awk '{ print $1" "$2 }' | uniq -c | sort -n | grep -v 
 	    done
     done
 
+echo "--- `date`: done" | tee -a "$MKH_TEMPFILE.diaglog"
+
 echo "===========
 Results:
     Files skipped:	$COUNT_SKIPPED
     Files merged:	$COUNT_MERGED
     Space saved:	$COUNT_MERGEDSZ
 
-"
+" | tee -a "$MKH_TEMPFILE.diaglog"
+
+df -k "$MKH_BASEDIR" | tee -a "$MKH_TEMPFILE.diaglog"
 }
