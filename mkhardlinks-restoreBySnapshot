@@ -1,0 +1,25 @@
+#!/bin/bash
+# example: sometimes mkhardlinks may "fix" wrong differing files.
+# If snapshot of old state exists, false-positive files can be 
+# restored while true-positive remain hardlinked:
+
+[ x"$SNAP" = x ] && SNAP="../.zfs/snapshot/20100921-01/windisk"
+[ ! -d "$SNAP" ] && exit 1
+
+find . -type f | egrep -v 'e/BatMail' | while read F; do
+    if [ -f "$SNAP/$F" ]; then
+	if ! gdiff "$SNAP/$F" "$F"; then
+	    echo ""
+	    echo "=== $F"
+	    ls -la  "$SNAP/$F" "$F"
+	    cksum "$SNAP/$F" "$F"
+	    
+	    rm -f "$F"
+	    cp -p "$SNAP/$F" "$F"
+	    
+	    ls -la  "$SNAP/$F" "$F"
+	fi
+    fi
+done
+
+
