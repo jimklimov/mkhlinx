@@ -22,12 +22,22 @@ print "Gonna start!\n";
 ### and '-type f' to not follow symlinks, but things can happen...
 
 ### If envvars are not defined, Perl vars will be empty and initialized below
-my $MKH_BASEDIR		= "$ENV{MKH_BASEDIR}";
-my $MKH_CONSIDER_METADATA	= "$ENV{MKH_CONSIDER_METADATA}";
-my $MKH_DEBUG		= "$ENV{MKH_DEBUG}";
-my $MKH_TEMPFILE		= "$ENV{MKH_TEMPFILE}";
-my $DIFF			= "$ENV{DIFF}";
-my $CKSUM_BIN			= "$ENV{CKSUM}";
+my $MKH_BASEDIR = "";
+if (defined($ENV{MKH_BASEDIR})) {	
+	$MKH_BASEDIR	= "$ENV{MKH_BASEDIR}"; }
+my $MKH_CONSIDER_METADATA = "";
+if (defined($ENV{MKH_CONSIDER_METADATA})) {
+	$MKH_CONSIDER_METADATA	= "$ENV{MKH_CONSIDER_METADATA}"; }
+my $MKH_DEBUG = "";
+if (defined($ENV{MKH_DEBUG})) {
+	$MKH_DEBUG	= "$ENV{MKH_DEBUG}"; }
+my $MKH_TEMPFILE = "";
+if (defined($ENV{MKH_TEMPFILE})) {
+	$MKH_TEMPFILE	= "$ENV{MKH_TEMPFILE}"; }
+my $DIFF = "";
+if (defined($ENV{DIFF})) {	$DIFF	= "$ENV{DIFF}"; }
+my $CKSUM_BIN = "";
+if (defined($ENV{CKSUM})) {	$CKSUM_BIN	= "$ENV{CKSUM}"; }
 
 ### MKH_CONSIDER_METADATA values:
 ###	no		skip metadata check (allow any files with same contents
@@ -67,7 +77,9 @@ if ( "$MKH_DEBUG" eq "" ) {
     $MKH_DEBUG = "yes";
 }
 
-if ( "$MKH_TEMPFILE" eq "" ) { $MKH_TEMPFILE = "/tmp/mkhardlinks-dedup-$$.tmp"; }
+if ( "$MKH_TEMPFILE" eq "" ) {
+    $MKH_TEMPFILE = "/tmp/mkhardlinks-dedup-$$.tmp";
+}
 
 ###########################
 ### File "stat" and "test" docs:
@@ -184,8 +196,13 @@ sub printLog {
 }
 
 sub printErrLog {
-    print STDERR "@_";
+    print STDERR "ERROR: @_";
     eval { print LOG "ERROR: @_"; };
+}
+
+sub printMergeLog {
+    print "MERGE: @_";
+    eval { print LOG "MERGE: @_"; };
 }
 
 ### Final sanity check
@@ -214,11 +231,11 @@ open (LOG, ">> $MKH_TEMPFILE.diaglog") or die "Can't log to '$MKH_TEMPFILE.diagl
 print LOG $DIAGS_HEADER;
 
 #trap "exit 0"  1 2 3 15
-breakDisable;
+#breakDisable;
 
 print "Sleeping 5 sec if you want to abort...\n";
-#sleep 5;
-sleep 1;
+sleep 5;
+#sleep 1;
 
 breakEnable;
 
@@ -271,8 +288,18 @@ while ( $LINE_SORT = <SORT> ) {
 	###### grep -w "$CKSUM" "$MKH_TEMPFILE" | while 
 	######  read CS SZ FILE; do
 		chomp $LINE_GREP;
-		$LINE_GREP =~ s/^\s+([\d].*[^\s])\s*$/$1/;
-		( $CS, $SZ, $FILE ) = split /\s+/, $LINE_GREP;
+		#$LINE_GREP =~ s/^\s+([\d].*[^\s])\s*$/$1/;
+		#( $CS, $SZ, $FILE ) = split /\s+/, $LINE_GREP;
+
+		if ( $LINE_GREP =~ /^([\d]*)\s([\d]*)\s(.*)$/ ) {
+		    $CS = "$1";
+		    $SZ = "$2";
+		    $FILE = "$3";
+		} else {
+		    print "ERROR: unparseable line:\n";
+		    print "	LINE_GREP='$LINE_GREP'\n";
+		    next;
+		}
 
 		if ( ! -f "$FILE" ) {
 		    print "ERROR: not a file '$FILE'\n";
@@ -342,17 +369,18 @@ while ( $LINE_SORT = <SORT> ) {
 			    breakDisable;
 
 			    if ( "$MKH_DEBUG" eq "no" ) {
+				printMergeLog "'$SZ' bytes:	rm -f '$FILE' && ln '$FIRSTFILE' '$FILE'\n";
 				if ( rename ( "$FILE", "$FILE.tmp.$$") ) {
 			    	    if ( link ( "$FIRSTFILE", "$FILE" ) ) {
-			    		unlink( "$FILE.tmp.$$" ) or print STDERR "ERROR: Can't unlink original '$FILE.tmp.$$' after hardlinking!\n";
+					unlink( "$FILE.tmp.$$" ) or printErrLog STDERR "Can't unlink original '$FILE.tmp.$$' after hardlinking!\n";
 					$COUNT_MERGED++;
 					$COUNT_MERGEDSZ += $SZ;
 				    } else {
-					rename ( "$FILE.tmp.$$", "$FILE" ) or print STDERR "ERROR: Can't re-link '$FILE.tmp.$$' after unsuccessful hardlinking attempt!\n";
+					rename ( "$FILE.tmp.$$", "$FILE" ) or printErrLog "Can't re-link '$FILE.tmp.$$' after unsuccessful hardlinking attempt!\n";
 				    }
 				}
 			    } else {
-				print "### rm -f '$FILE' && ln '$FIRSTFILE' '$FILE'\n";
+				printMergeLog "DEBUG: '$SZ' bytes:	### rm -f '$FILE' && ln '$FIRSTFILE' '$FILE'\n";
 				$COUNT_MERGED++;
 				$COUNT_MERGEDSZ += $SZ;
 			    }
