@@ -113,6 +113,10 @@ sub getACL {
 }
 
 sub getMeta {
+    if ( "$MKH_CONSIDER_METADATA" eq "no" ) {
+	return "";
+    }
+
     my $filename = shift;
     ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks) = stat($filename);
 
@@ -130,8 +134,6 @@ sub getMeta {
 	###### ls -lanid "$1" | awk '{print $2" "$4" "$5" "$7" "$8" "$9 }'
 	###### ls -lanidV "$1" | tail +2
 	return "$mode $uid $gid $mtime\n" . &getACL("$filename");
-    } elsif (	"$MKH_CONSIDER_METADATA" eq "no" ) {
-	return "";
     } else {
 	return "";
     }
@@ -268,6 +270,7 @@ $COUNT_LINES	= 0;
 
 ###### sort -n "$MKH_TEMPFILE" | awk '{ print $1" "$2 }' | uniq -c | sort -n | grep -v ' 1 ' | {
 ######  while read COUNT CKSUM SIZE; do
+### This selects lines with unique CKSUM and SIZE couples, which have been hit more than once
 open (SORT, "sort -n '$MKH_TEMPFILE' | awk '{ print " . '$1" "$2' . " }' | uniq -c | sort -n | grep -v ' 1 ' |") or die "Can't sort results!\n";
 
 while ( $LINE_SORT = <SORT> ) {
@@ -283,6 +286,12 @@ while ( $LINE_SORT = <SORT> ) {
 
 	### TODO: hide greping in perl, maybe cache whole file as an array
 	open (GREP_CKSUM, "grep -w '$CKSUM' '$MKH_TEMPFILE' | ") or die "Can't grep for cksum data!\n";
+
+	### TODO: we need a way to differentiate two strands of files with same
+	### checksums and sizes. Currently we only merge files which have same
+	### contents as the one FIRSTFILE.
+	### IDEA: Build an array of "firstfiles" from rejected names, and
+	### iterate through this block until they were all checked?
 
 	while ( $LINE_GREP = <GREP_CKSUM> ) {
 	###### grep -w "$CKSUM" "$MKH_TEMPFILE" | while 
