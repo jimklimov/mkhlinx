@@ -1,13 +1,17 @@
 #!/usr/bin/perl -w
 
+use File::Find;
+use File::Basename;
+use Cwd;
+
 print "Gonna start!\n";
 
 ### This script deduplicates file archives by finding same files
-### and hardlinking them. (C) 2007-2010 by Jim Klimov, COS&HT
+### and hardlinking them. (C) 2007-2010,2014 by Jim Klimov, COS&HT
 
 ### Controlled by Env.Vars, see comments below:
 ### MKH_BASEDIR   MKH_CONSIDER_METADATA   MKH_DEBUG  MKH_TEMPFILE
-### DIFF
+### MKH_DBROOT	  DIFF
 
 ### Predefine MKH_DEBUG=anything to skip actual removal and linking
 
@@ -34,6 +38,9 @@ if (defined($ENV{MKH_DEBUG})) {
 my $MKH_TEMPFILE = "";
 if (defined($ENV{MKH_TEMPFILE})) {
 	$MKH_TEMPFILE	= "$ENV{MKH_TEMPFILE}"; }
+my $MKH_DBROOT = "";
+if (defined($ENV{MKH_DBROOT})) {
+	$MKH_DBROOT	= "$ENV{MKH_DBROOT}"; }
 my $DIFF = "";
 if (defined($ENV{DIFF})) {	$DIFF	= "$ENV{DIFF}"; }
 my $CKSUM_BIN = "";
@@ -52,7 +59,8 @@ if ( "$MKH_CONSIDER_METADATA" eq "" ) {
 
 ### Dir under which we do the work
 if ( "$MKH_BASEDIR" eq "" ) {
-    $MKH_BASEDIR = "/export/home/jim/sol10uX-COS";
+    $MKH_BASEDIR = `pwd`; chomp $MKH_BASEDIR;
+    # $MKH_BASEDIR = "/export/home/jim/sol10uX-COS";
     # $MKH_BASEDIR = "/u01/s01/dvd/s0/Solaris_10/Product";
 }
 
@@ -92,9 +100,9 @@ sub getInode {
     ###### ls -lani "$1" | awk '{print $1}'
     ### Actually returns "DEVNUM:INODE"
     my $filename = shift;
-#    return "(stat($filename))[1]";
+#    return "(lstat($filename))[1]";
 
-    ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks) = stat($filename);
+    ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks) = lstat($filename);
     return "$dev:$ino";
 }
 
@@ -118,7 +126,7 @@ sub getMeta {
     }
 
     my $filename = shift;
-    ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks) = stat($filename);
+    ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks) = lstat($filename);
 
     if ( 	"$MKH_CONSIDER_METADATA" eq "owner" ) {
 	###### ls -lanid "$1" | awk '{print $2" "$4" "$5 }'
@@ -207,10 +215,169 @@ sub printMergeLog {
     eval { print LOG "MERGE: @_"; };
 }
 
-### Final sanity check
+my @SIZENAMES=("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB");
+sub sizeToSubdir {
+    ### This routine translates the numeric file size into the name for a
+    ### subdir to store it, so that not all files are dumped into the same
+    ### huge dir. Format is layered by base-10 orders of magnitude, first
+    ### for kilobyte,etc. nametag, then the number (singles, tens or hundreds).
+    ### Examples:
+    ###	8	B/8
+    ###	123	B/100
+    ### 4123	KB/4
+    ### 13123	KB/10
+    ###	412123	KB/400
+    ### 2521236612983791279379112123	10_27/2
+
+    my $a=shift;
+    $c=0;
+    $b=$a;
+    while ($b > 1000) { $c++; $b /= 1000; }
+
+    ### Order of magnitude
+    $C = $SIZENAMES[$c];
+    if ( $C eq "" ) { $C="10_".$c*3;}
+
+    ### Chop off extra digits and the radix
+    if 		( $b < 10 )	{ $x = 1; }
+    elsif 	( $b < 100 )	{ $x = 10; }
+    else 			{ $x = 100; }
+    $b /= $x;
+    $b =~ s/\..*$//;
+    $b *= $x;
+
+    return "$C/$b";
+}
+
+sub isWritableDir {
+    ### "-w" may lie - due to ACLs, NFS, ROFS, etc.
+
+    my $dir = shift;
+
+    if (! -d $dir) {
+#	print STDERR "ERROR: Not a directory: '$dir'\n";
+	return 1;
+    }
+
+#    print STDERR "=== Testfile $dir/.test...\n";
+    open (TEST, ">>$dir/.test") or return 2;
+    close (TEST);
+    unlink ("$dir/.test");
+#    print STDERR "=== Test ok\n";
+    return 0;
+}
+
+sub mkdirp {
+    ### Recursive "mkdir -p" with an extra error check
+    my $dir = shift;
+    if (-d $dir) {
+#	if ( isWritableDir($dir) != 0 ) { die "FATAL: Can't use DIR='$dir'!\n"; }
+	if ( ! -w $dir ) { die "FATAL: Can't use DIR='$dir'!\n"; }
+	return 0;
+    }
+    mkdirp(dirname($dir));
+    mkdir $dir;
+    if ( ! -w $dir ) { die "FATAL: Can't use DIR='$dir'!\n"; }
+#    if ( isWritableDir($dir) != 0 ) { die "FATAL: Can't use DIR='$dir'!\n"; }
+    return 0;
+}
+
+sub findEnlistFiles {
+    ### Finds files and logs them into the database, without any checksums
+    ### (initially) including backlinks to filesystem-stored filenames.
+    ### This allows to later find similarly sized different inodes and if
+    ### they are good to merge - easily merge them.
+
+    chdir ("$MKH_BASEDIR") or die "Can't cd to '$MKH_BASEDIR'!\n";
+    find ( \&processAddLink, "." );
+}
+
+sub processAddLink {
+    ### A callback routine for find() of new files, so that they can be added
+    ### to the database of hardlinks
+    my $FNAME = $_;
+
+    ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks) = lstat($FNAME)
+	or die "ERROR: Can't stat '$File::Find::name'\n";
+
+    ### Don't descend into some directories
+    $File::Find::prune = 0;
+    if ( -d $FNAME ) {
+	if ( $FNAME =~ /.zfs/ ) { $File::Find::prune = 1; return; }
+	if ( $FNAME =~ /.hlinx/ ) { $File::Find::prune = 1; return; }
+	if ( $dev != $DEV_DBROOT ) {
+	    print STDERR "PRUNE: Not descending into '$FNAME' - different FS\n";
+	    $File::Find::prune = 1;
+	    return;
+	}
+    }
+
+#    if ( -d $FNAME ) {
+#	print STDERR "=== $File::Find::name/\n";
+#    } els
+    if ( -f $FNAME && $size != 0 ) {
+	print STDERR "=== $File::Find::name\n";
+
+	### Now we only have non-empty files in the same FS as our database...
+	my $DBDIR = "$MKH_DBROOT/".sizeToSubdir($size);
+	if ( mkdirp ($DBDIR) != 0 ) { die "FATAL: Can't use '$DBDIR'!\n"; }
+
+	my $FN1 = "s=$size.i=$ino.";
+	@FNEXIST = glob("$DBDIR/$FN1"."*.link");
+	if ( $#FNEXIST == -1 ) {
+	    ### New file
+	    my $FN = $FN1 . "c=_.t=$mtime.link";
+	    link ( $FNAME, "$DBDIR/$FN" ) 
+		or die "FATAL: Can't hardlink '$File::Find::name' to '$DBDIR/$FN'\n";
+	} else {
+	    my $FN = $FNEXIST[0];
+	}
+
+	$LINE = "$ino\t$size\t$MKH_BASEDIR_OFFSET/$File::Find::name";
+	$LINE =~ s,/./,/,g;
+
+	my $addline = 1;
+	my $BF = "$DBDIR/backlinks.txt";
+	if ( -f "$BF" ) {
+	    open ( BF, "$BF" ) or die "FATAL: Can't read '$BF'!\n";
+	    while (<BF>) {
+		chomp;
+		if ( $_ eq $LINE ) {
+		    $addline = 0;
+		}
+	    }
+	    close(BF);
+	}
+	if ( $addline == 1 ) {
+	    ### create or update the file
+	    open ( BF, ">>$BF" ) or die "FATAL: Can't modify '$BF'!\n";
+	    print BF "$LINE\n";
+	    close(BF);
+	}
+    }
+
+    ### Restore the variable
+    $_ = $FNAME;
+}
+
+###########################################################################
+### Final sanity checks
 system ( "$DIFF '$0' '$0'" ) == 0 or die "Can't use diff command '$DIFF'!\n";
 
 chdir ("$MKH_BASEDIR") or die "Can't cd to '$MKH_BASEDIR'!\n";
+
+$MPT_BASEDIR=`/bin/df -k . | awk '{print \$NF}' | egrep '^/'` 
+	or $MPT_BASEDIR="$MKH_BASEDIR";
+chomp $MPT_BASEDIR;
+if ( "$MKH_DBROOT" eq "" ) {
+    ### Database of hardlinks should be in the same filesystem; default
+    ### to its root mountpoint
+
+    $MKH_DBROOT="$MPT_BASEDIR/.hlinx";
+}
+
+$MKH_BASEDIR_OFFSET = `pwd`; chomp $MKH_BASEDIR_OFFSET;
+$MKH_BASEDIR_OFFSET =~ s/^$MPT_BASEDIR/./;
 
 print "Gonna work!\n";
 
@@ -227,20 +394,97 @@ $DIAGS_HEADER .=
     "	CKSUM		= $CKSUM_BIN\n" ;
 $DIAGS_HEADER .= "\nFree space now:\n" . `df -k "$MKH_BASEDIR"` . "\n";
 
+$DIAGS_HEADER .=
+    "	MKH_DBROOT		= $MKH_DBROOT";
+
+if ( -d "$MKH_DBROOT" ) { $DIAGS_HEADER .= " (exists)"; }
+if ( isWritableDir("$MKH_DBROOT") == 0 ) { $DIAGS_HEADER .= " (writeable)"; }
+$DIAGS_HEADER .=
+    "\n	MKH_BASEDIR_OFFSET	= $MKH_BASEDIR_OFFSET\n";
+
 print $DIAGS_HEADER;
 open (LOG, ">> $MKH_TEMPFILE.diaglog") or die "Can't log to '$MKH_TEMPFILE.diaglog'!\n";
 
 print LOG $DIAGS_HEADER;
 
-#trap "exit 0"  1 2 3 15
-#breakDisable;
-
 print "Sleeping 5 sec if you want to abort...\n";
 sleep 5;
-#sleep 1;
 
+### Try to create the working database directory
+if ( ! -d "$MKH_DBROOT" ) {
+    mkdir "$MKH_DBROOT" or 
+	die "FATAL: Can't create MKH_DBROOT='$MKH_DBROOT'!\n"; 
+}
+if ( isWritableDir("$MKH_DBROOT") != 0 ) { 
+	die "FATAL: Can't write to MKH_DBROOT='$MKH_DBROOT'!\n";
+}
+$MPT_DBROOT=`/bin/df -k "$MKH_DBROOT" | awk '{print \$NF}' | egrep '^/'` 
+	or $MPT_DBROOT="";
+chomp $MPT_DBROOT;
+if ( "$MPT_BASEDIR" ne "$MPT_DBROOT" ) {
+	die "FATAL: MKH_DBROOT not in same filesystem as MKH_BASEDIR!\n";
+}
+
+($DEV_DBROOT,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks) = lstat($MPT_DBROOT)
+	or die "FATAL: Can't stat MKH_DBROOT='$MKH_DBROOT'!\n";;
+
+### Start of work
 breakEnable;
 
+### Phase 1: Discovery
+###	Find all files and link them (if new) to the database directory
+###		and a backlink text file
+findEnlistFiles();
+
+### Phase 2: Quick clean-up (also as an externally callable routine)
+###	Process the database to remove link-files with only one hardlink
+
+### Phase 3: Clean-up and checksum maintenance
+###	Verify that backlinks.txt are valid (pointed names exist), remove
+###		invalid lines; sort|uniq
+###	Verify that size in filename matches size of file, otherwise rename
+###		the hardlink file as is proper; recalculate checksum if used
+###	Verify that for files with several hardlinks, their number matches
+###		the recorded number of backlinks (report otherwise)
+###	Verify that subdirectory name is proper for this file (late rebalance
+###		or modified per above), move mismatching files and backlinks
+###		Keep in mind that target may exist, knowledge should be merged
+###		and validated...
+
+### Phase 4: Checksums and merging
+###	Detect sets of two or more files of same size in different inodes
+###	Verify (again) sizes are still valid ;)
+###	For any hits calculate checksums for hardlinks which have none, or
+###		update checksums if timestamp changed
+###	If any different inodes match indeed (have same checksums) -
+###		proceed to diff and merging (subject to requested method)
+###		trying to "reattach" inodes with smaller count to inodes with
+###		larger count; rewrite backlinks per transaction. Try to retain
+###		original archive-directory timestamps.
+
+### Future Tech: ZFS dedup
+###	Detect same files (size, checksum) in different datasets and rewrite
+###		them with enabled dedup and same compression/blocksize setup,
+###		afterwards return the previously active settings to datasets.
+###		Use zdb to verify that the file has not yet got dedup-bits.
+###	Also useful for same dataset, different access rights/owners/ACLs/...
+
+close LOG;
+exit 0;
+
+############################################################################
+####### OLD CODE
+### Round 1: Find all files of the same size and different inode numbers
+### Reason: don't checksum unique files that will be skipped anyway
+if ( ! -s "$MKH_TEMPFILE.0-sz" ) {
+    printLog ( "=== ".&getDate().": Creating MKH_TEMPFILE_0 = '$MKH_TEMPFILE.0-sz'...\n" );
+    printLog ( "find . -mount -type f -ls | (sort by size) > '" . $MKH_TEMPFILE .".0-sz'" );
+
+    system ( "find . -mount -type f -ls | while read _INODE _DU _DRWX _CNT _U _G _SIZE _D1 _D2 _D3 _NAME; do /bin/echo \"$_SIZE\t$_INODE\t$_NAME\"; done | sort -n > '" . $MKH_TEMPFILE .".0-sz'" );
+    printLog ( "--- ".&getDate().": done ($?)\n" );
+}
+
+### Round 2: Checksums of suspected-duplicate currently-unique files
 ### TODO: Perhaps provide some parallelism for multiCPU machines?
 ### TODO: Perhaps skip some work for files already with hardlinks?
 if ( ! -s "$MKH_TEMPFILE" ) {
@@ -381,7 +625,7 @@ while ( $LINE_SORT = <SORT> ) {
 				printMergeLog "'$SZ' bytes:	rm -f '$FILE' && ln '$FIRSTFILE' '$FILE'\n";
 				if ( rename ( "$FILE", "$FILE.tmp.$$") ) {
 			    	    if ( link ( "$FIRSTFILE", "$FILE" ) ) {
-					unlink( "$FILE.tmp.$$" ) or printErrLog STDERR "Can't unlink original '$FILE.tmp.$$' after hardlinking!\n";
+			    		unlink( "$FILE.tmp.$$" ) or printErrLog STDERR "Can't unlink original '$FILE.tmp.$$' after hardlinking!\n";
 					$COUNT_MERGED++;
 					$COUNT_MERGEDSZ += $SZ;
 				    } else {
