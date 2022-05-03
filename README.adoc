@@ -235,8 +235,12 @@ This script pays more attention to the tree walk (ignoring names like
 
 === Logic of `mkhardlinks2.pl` cycle
 
-As the comments say, planned logic of the script follows the phases below.
+As the comments say, planned logic of the script follows the phases
+below. These might as well be several behaviors with their own entry
+points, with a default behavior chaining these activities as its phases.
+
 Currently only the first one was actually implemented.
+
 
 ==== Phase 1: Discovery
 
@@ -249,30 +253,44 @@ did not involve actual checksum comparisons, but dealt so far with
 the construction of the `.hlinx` directory tree based on filesystem
 metadata seen with `lstat()`, which is less intensive on resources.
 
+
 ==== Phase 2: Quick clean-up (also as an externally callable routine)
 
 [TODO]
 ======
 * Process the database to remove link-files with only one hardlink
+  (tombstones)
 ======
+
 
 ==== Phase 3: Clean-up and checksum maintenance
 
+This phase runs over the data collected in the `.hlinx` directory:
+
 [TODO]
 ======
-* Verify that backlinks.txt are valid (pointed names exist), remove
-  invalid lines; sort|uniq
-* Verify that size in filename matches size of file, otherwise rename
-  the hardlink file as is proper; recalculate checksum if used
+* Verify that `backlinks.txt` remain valid (pointed names exist),
+  remove invalid lines; pass through `sort|uniq`
+* Verify that size encoded in the structured filename matches actual
+  current size of file, otherwise rename the hardlink file as is proper;
+  recalculate checksum if used
 * Verify that for files with several hardlinks, their number matches
-  the recorded number of backlinks (report otherwise)
+  the recorded number of backlinks (report otherwise => queue to find
+  the other names of this file?)
 * Verify that subdirectory name is proper for this file (late rebalance
-  or modified per above), move mismatching files and backlinks
+  or modified per above), move mismatching files and backlinks.
++
   Keep in mind that target may exist, knowledge should be merged
   and validated...
 ======
 
+
 ==== Phase 4: Checksums and merging
+
+What if we aggregated backups from different systems that earlier
+had the hard links to deduplicate? They may be delivering several
+sets of same content, where we want to keep only one copy, just
+with more names attached now.
 
 [TODO]
 ======
@@ -286,6 +304,7 @@ metadata seen with `lstat()`, which is less intensive on resources.
   larger count; rewrite backlinks per transaction. Try to retain
   original archive-directory timestamps.
 ======
+
 
 ==== Future Tech: ZFS dedup
 
