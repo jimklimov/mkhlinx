@@ -1,0 +1,298 @@
+= mkhlinx
+
+This old project helps automate maintenance of static file collections,
+such as unpacked distribution images (or those in process of preparation),
+mirrored package archives, photos downloaded from a phone into different
+locations over time (and same photos from different phones in a family
+sharing the pics), or aggregated backups of your old computers collected
+onto yet another newer larger storage system.
+
+The common themes in these cases are:
+
+* Some duplication is expected;
+
+* Probably not as much as to make e.g. ZFS dedup worth its overhead,
+  or the target filesystem is not ZFS (e.g. preparing a distro ISO);
+
+* Files are not expected to change;
+
+* These are your files, so nuances like filesystem ownership and access
+  are not a primary consideration.
+
+This is where good old hard links ("hlinx") can help, and these scripts
+are various iterations of my quest to arrange and update those. Separate
+files with identical contents can be removed (all but one), just their
+original filenames would point to the same filesystem object (inode).
+
+Hard links have limitations however, such as an inode and all pointers
+to it from directory entries being defined within a single filesystem
+(or ZFS dataset) -- so identical files in different filesystems can not
+be collapsed into a hard link. They also are literally different names
+for the same filesystem object, so there is only one definition for its
+access permissions (POSIX, ACL, ownership) and other metadata (timestamps).
+And note that while hard links conserve storage space compared to keeping
+many copies of the same file, you would only regain free space by locating
+and deleting all filenames attached to the inode.
+
+Being a filesystem-level concept, hard links are easily transferred
+"as such" across many platforms (including many POSIX filesystems
+ranging from server to desktop to Android phone with ext4 or xfs
+or ubifs, and NTFS for Windows and beyond -- but notably not FAT relatives)
+with tools such as `rsync` (which would run to transfer a whole disk or a
+large part thereof, to see that several filenames point to the same file
+object).
+
+Also unlike symbolic links (symlinks) which are special text in a
+directory entry encoding the absolute or relative path to another
+object, the hard links are fully-fledged files right away -- so are
+easy to copy to a different media or network location without fuss.
+
+
+[WARNING]
+=========
+This approach is NOT good for cases that oppose the common themes
+above, e.g.:
+
+* *Do not use this where* you expect files to be edited later and have
+  unique contents (e.g. do not use this script to dedup a filesystem
+  with many home directories, since shell profile files would likely
+  be copies of the same data from /etc/skel... until they get tuned);
+
+* *Do not use this where* ownership of different files with same content
+  is important (home directory filesystems like above, or backups of
+  data from different users who would not want to share access this
+  way, or perhaps where data is sensitive and files are only readable
+  by owner).
+=========
+
+Finally note that these scripts primarily evolved in a Solaris/illumos
+environment so syntax and tools may vary from defaults of a GNU userland.
+
+The recommended tool at this moment is `mkhardlinks2.pl` and other
+takes on the issue are documented below.
+
+
+== Shell v1: `mkhardlinks`
+
+There were a few unrelated overgrown one-liners seen in Git history,
+which culminated in a larger script, largely controlled by envvars:
+
+* `MKH_BASEDIR` (REQUIRED) -- this location and all its subdirs MUST BE
+  in the same filesystem or dataset, so that hardlinks are possible.
+  The `find` command involved does use '-mount' to only find names
+  in one filesystem, and '-type f' to not follow symlinks, but just
+  in case always assume that "things can happen..."
++
+NOTE: NO SPECIAL CHECKS ARE DONE DURING FILE REMOVAL!
++
+The `MKH_BASEDIR` has a default value of `/export/ftp` which may be of
+moderate use for a random deployment ;)
+
+* `MKH_DEBUG` -- Predefine as anything to skip actual removal and linking,
+  neutering the calls to just report what would have been done (dry-run);
+
+* `MKH_CONSIDER_METADATA` -- specify how loosely or strictly consider
+  the metadata of two files with same contents. Values:
++
+|     no        | skip metadata check (allow any files with same contents
+                  to merge into one filesystem inode) |
+|     owner     | check if UID/GID/POSIX access rights fields differ |
+|     all       | also check if date (timestamp) fields differ |
+|     owner-acl | try to check UID/GID/POSIX and UFS/ZFS/NFSv4 ACLs |
+|     all-acl   | try to check UID/GID/POSIX/DATE and UFS/ZFS/NFSv4 ACLs |
++
+By default it is `owner`.
+
+* `MKH_TEMPFILE` -- for debugging, you can specify a particular filename
+  where temporary data moves around. Note that this can grow to be a large
+  file, so part of the choice is also balancing the use of a `tmpfs` for
+  speed and avoiding (SSD storage) wear-out vs. exhausting all RAM with it;
+
+* `DIFF` -- Specify a `diff` implementation (with quiet args etc.,
+  as deemed fit), e.g. `gdiff -q` was much faster on Solaris (by
+  4x on sfv240 test) than the native tool, but was only optionally
+  available.
+
+According to TODO entries logged back then, the script did not specially
+consider files that already had hardlinks, and did not take advantage of
+parallelism on its own (the tools it calls might be or not be SMP-aware).
+
+This script walks the specified `MKH_BASEDIR` location each time it is
+called, calculates checksums of all objects it finds (probably doing so
+several times for many existing links to the same filesystem object),
+and for all names that are not rejected by chosen `MKH_CONSIDER_METADATA`
+against the first-seen file name for that checksum, it replaces the
+secondary file(s) with hard links to that first file name (quickly
+skipping those entries that already have same inode).
+
+NOTE: If any of the "secondary file(s)" were rejected by the chosen
+`MKH_CONSIDER_METADATA` setting, they are kept in place "as is",
+so e.g. two groups of files with same contents but two different
+owners would not deduplicate into two inodes this way -- only the
+first seen group will do so. Beside metadata, this also applies to
+"strands" of files with for some reason same checksum and size but
+different contents (collisions).
+
+To identify files with same contents, the script uses `md5sum` which
+is nowadays deemed not cryptographically secure -- but that is an
+implementation detail easy to fix (we are after something fast that
+returns a hash string to compare). Among safety checks the script
+looks at file sizes, and it is much less probable to not just collide
+hashes, but do so with a same-sized block of data. Finally it also
+just uses the specified (or detected) `DIFF` command implementation
+to directly compare the two separate files before removing one.
+
+During sensitive operations, the script does its best to trap signals
+(such as TERM and BREAK) to delay any requested abortions until a
+filesystem transaction (delete and re-link file names) is completed.
+
+== `test2.sh`
+
+Early test helper to check behavior of `find` and checksum generation
+logic.
+
+== Perl v1: `mkhardlinks.pl`
+
+This is more or less a one-to-one rewrite of the shell script above
+into Perl, for a bit of portability (not relying on shell nuances)
+and more importantly -- a performance gain (less forking for basic
+repetitive operations like look-up into cached metadata and checksums).
+
+NOTE: Portability is a complex consideration here: it may quite be
+possible to write shell scripts that run on any interpreter (at a
+cost of dumber syntax and expensive overheads), as well as those
+which adapt to the interpreter they run in (to implement alternate
+logic). The original script can be useful on sytems without Perl.
+
+The Perl implementation is a drop-in replacement -- it is also driven
+by same environment variables listed above, with a few additions:
+
+* `CKSUM` allows to specify a custom tool to return the hash -- and
+  as noted above, with all the additional checks to rule out false
+  positives, the focus is on *quickly* identifying probably-same
+  contents, so the default here is the old `cksum` (CRC) program;
+
+* `MKH_DEBUG` is `yes` by default, so caller has to explicitly
+  `export MKH_DEBUG=no` before calling the script to enable the
+  potentially un-safe operations.
+
+According to TODO comments made back then, this script also has the
+limitation about only merging files which have same contents as the
+one `FIRSTFILE` (no support for "strands" of files with collision --
+same checksums and sizes but different actual contents).
+
+It also has room for improvement in performance area, e.g. the loop
+looking for checksum hits keeps calling `grep` to search in the
+`MKH_TEMPFILE` collected information, instead of caching the file
+as an array in memory (this however can be prohibitive, depending
+on amount of file entries vs. amount of RAM).
+
+
+== Perl v2: `mkhardlinks2.pl`
+
+This is a later visit to the codebase of `mkhardlinks.pl`, adding
+support for the Database of hardlinks, which should be in the same
+filesystem. This location contains a tree (arranged by file size
+order of magnitude -- kilobytes here, gigabytes there) of specially
+named hard links to the contents with structured data in the names
+to optimize some work for the script. Coincidentally, this location
+also allows to estimate the unique storage space consumed on the
+filesystem or dataset, and is also where the tombstones reside
+(any inode here with a reference count of one is the last remnant
+of file deleted from the "user side" of the filesystem).
+
+The script also maintains a `backlinks.txt` in such directories
+to help find where in the actual filesystem those names were found
+(e.g. to help clean away some files -- all instances of them --
+to really free up space).
+
+Changes in environment variables:
+
+* New `MKH_DBROOT` to specify the location of the Database of hardlinks;
+  defaults to a `.hlinx` directory made in filesystem's root mountpoint.
+
+* The `MKH_BASEDIR` default here is the current directory of the caller.
+
+This script pays more attention to the tree walk (ignoring names like
+`.zfs`, `.hlinx` and expanded value of `$DEV_DBROOT`).
+
+=== Logic of `mkhardlinks2.pl` cycle
+
+As the comments say, planned logic of the script follows the phases below.
+Currently only the first one was actually implemented.
+
+==== Phase 1: Discovery
+
+* Find all files and link them (if new) to the database directory
+  and a backlink text file
+
+NOTE: from comments in code, e.g. at `findEnlistFiles()` it seems
+that in the latest revision of the script as of this writing, it
+did not involve actual checksum comparisons, but dealt so far with
+the construction of the `.hlinx` directory tree based on filesystem
+metadata seen with `lstat()`, which is less intensive on resources.
+
+==== Phase 2: Quick clean-up (also as an externally callable routine)
+
+[TODO]
+======
+* Process the database to remove link-files with only one hardlink
+======
+
+==== Phase 3: Clean-up and checksum maintenance
+
+[TODO]
+======
+* Verify that backlinks.txt are valid (pointed names exist), remove
+  invalid lines; sort|uniq
+* Verify that size in filename matches size of file, otherwise rename
+  the hardlink file as is proper; recalculate checksum if used
+* Verify that for files with several hardlinks, their number matches
+  the recorded number of backlinks (report otherwise)
+* Verify that subdirectory name is proper for this file (late rebalance
+  or modified per above), move mismatching files and backlinks
+  Keep in mind that target may exist, knowledge should be merged
+  and validated...
+======
+
+==== Phase 4: Checksums and merging
+
+[TODO]
+======
+* Detect sets of two or more files of same size in different inodes
+* Verify (again) sizes are still valid ;)
+* For any hits calculate checksums for hardlinks which have none, or
+  update checksums if timestamp changed
+* If any different inodes match indeed (have same checksums) -
+  proceed to diff and merging (subject to requested method)
+  trying to "reattach" inodes with smaller count to inodes with
+  larger count; rewrite backlinks per transaction. Try to retain
+  original archive-directory timestamps.
+======
+
+==== Future Tech: ZFS dedup
+
+[TODO]
+======
+* Detect same files (size, checksum) in different datasets and rewrite
+  them with enabled dedup and same compression/blocksize setup,
+  afterwards return the previously active settings to datasets.
+* Use zdb to verify that the file has not yet got dedup-bits.
+* Also useful for same dataset, different access rights/owners/ACLs/...
+======
+
+== `mkhardlinks2-cachewarmup.sh`
+
+A helper script to warm up the `backlinks.txt` cache and to count
+these files and their sizes (should be executed in dataset base dir
+which contains the `.hlinx` sub-directory).
+
+Partially informative, partially optimization (so that directory
+trees and file contents are in RAM cache of the filesystem).
+
+== `mkhardlinks-restoreBySnapshot`
+
+An example of helper script logic for potential SNAFUs: sometimes
+`mkhardlinks` may "fix" wrong differing files. If a (ZFS) snapshot
+of old state exists, such false-positive files can be restored,
+while true-positive ones remain hardlinked.
