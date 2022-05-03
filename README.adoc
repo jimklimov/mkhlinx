@@ -94,12 +94,21 @@ moderate use for a random deployment ;)
 * `MKH_CONSIDER_METADATA` -- specify how loosely or strictly consider
   the metadata of two files with same contents. Values:
 +
-|     no        | skip metadata check (allow any files with same contents
-                  to merge into one filesystem inode) |
-|     owner     | check if UID/GID/POSIX access rights fields differ |
-|     all       | also check if date (timestamp) fields differ |
-|     owner-acl | try to check UID/GID/POSIX and UFS/ZFS/NFSv4 ACLs |
-|     all-acl   | try to check UID/GID/POSIX/DATE and UFS/ZFS/NFSv4 ACLs |
+[options="header"]
+|=========================================================================
+| Value     | Meaning
+
+| `no`        | skip metadata check (allow any files with same contents
+                to merge into one filesystem inode)
+
+| `owner`     | check if UID/GID/POSIX access rights fields differ
+
+| `all`       | also check if date (timestamp) fields differ
+
+| `owner-acl` | try to check UID/GID/POSIX and UFS/ZFS/NFSv4 ACLs
+
+| `all-acl`   | try to check UID/GID/POSIX/DATE and UFS/ZFS/NFSv4 ACLs
+|=========================================================================
 +
 By default it is `owner`.
 
