@@ -76,8 +76,14 @@ above, e.g.:
 Finally note that these scripts primarily evolved in a Solaris/illumos
 environment so syntax and tools may vary from defaults of a GNU userland.
 
-The recommended tool at this moment is `mkhardlinks2.pl` and other
-takes on the issue are documented below.
+The recommended tool at this moment is `mkhardlinks.pl` to deduplicate,
+with effort targeted on `mkhardlinks2.pl` completion to optimize this.
+The latter can already be used to catalog the existing files in a
+`.hlinx` sub-directory for further processing (not yet implemented,
+so it does not actually deduplicate things).
+
+Various takes on the issue slowly done over the years are documented
+below.
 
 
 == Shell v1: `mkhardlinks`
@@ -223,6 +229,11 @@ to help find where in the actual filesystem those names were found
 (e.g. to help clean away some files -- all instances of them --
 to really free up space).
 
+NOTE: This script rearrangement is not completed, so while it can
+already walk the file system to produce a library of hard links and
+of `backlinks.txt` files, it does not yet do the actual work to
+identify and merge several copies of content into one inode.
+
 Changes in environment variables:
 
 * New `MKH_DBROOT` to specify the location of the Database of hardlinks;
@@ -252,6 +263,10 @@ that in the latest revision of the script as of this writing, it
 did not involve actual checksum comparisons, but dealt so far with
 the construction of the `.hlinx` directory tree based on filesystem
 metadata seen with `lstat()`, which is less intensive on resources.
+The goal of this phase is to quickly catalogue all files of interest,
+and to save info about them in a structured manner; then another
+phase would look into discovered files of the same size to checksum
+and otherwise compare them as candidates for a "merge" into one inode.
 
 
 ==== Phase 2: Quick clean-up
@@ -296,10 +311,14 @@ had the hard links to deduplicate? They may be delivering several
 sets of same content, where we want to keep only one copy, just
 with more names attached now.
 
+We can walk the `.hlinx` directory data to find opportunities:
+
 .TODO
 [NOTE]
 ======
 * Detect sets of two or more files of same size in different inodes
+  (one of those two or more names is in `.hlinx`, and the others are
+  elsewhere in the file system)
 * Verify (again) sizes are still valid ;)
 * For any hits calculate checksums for hardlinks which have none, or
   update checksums if timestamp changed
