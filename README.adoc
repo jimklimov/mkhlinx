@@ -254,9 +254,12 @@ the construction of the `.hlinx` directory tree based on filesystem
 metadata seen with `lstat()`, which is less intensive on resources.
 
 
-==== Phase 2: Quick clean-up (also as an externally callable routine)
+==== Phase 2: Quick clean-up
 
-[TODO]
+Makes sense also as an externally callable routine.
+
+.TODO
+[NOTE]
 ======
 * Process the database to remove link-files with only one hardlink
   (tombstones)
@@ -267,7 +270,8 @@ metadata seen with `lstat()`, which is less intensive on resources.
 
 This phase runs over the data collected in the `.hlinx` directory:
 
-[TODO]
+.TODO
+[NOTE]
 ======
 * Verify that `backlinks.txt` remain valid (pointed names exist),
   remove invalid lines; pass through `sort|uniq`
@@ -292,7 +296,8 @@ had the hard links to deduplicate? They may be delivering several
 sets of same content, where we want to keep only one copy, just
 with more names attached now.
 
-[TODO]
+.TODO
+[NOTE]
 ======
 * Detect sets of two or more files of same size in different inodes
 * Verify (again) sizes are still valid ;)
@@ -308,7 +313,8 @@ with more names attached now.
 
 ==== Future Tech: ZFS dedup
 
-[TODO]
+.TODO
+[NOTE]
 ======
 * Detect same files (size, checksum) in different datasets and rewrite
   them with enabled dedup and same compression/blocksize setup,
