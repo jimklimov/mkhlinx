@@ -1,18 +1,26 @@
 = mkhlinx
+:toc:
 
-This old project helps automate maintenance of static file collections,
-such as unpacked distribution images (or those in process of preparation),
-mirrored package archives, photos downloaded from a phone into different
-locations over time (and same photos from different phones in a family
-sharing the pics), or aggregated backups of your old computers collected
-onto yet another newer larger storage system.
+== Overview
+
+This old project recently found in my attic helps automate maintenance
+of static file collections where many duplicates (files with same content)
+are anticipated or known, such as (and not limited to):
+
+* unpacked distribution images (or those in process of preparation),
+* mirrored package archives,
+* photos downloaded from a phone into different locations over time
+  (and same photos from different phones in a family sharing the pics),
+* aggregated backups of your old computers collected onto yet another
+  newer larger storage system.
 
 The common themes in these cases are:
 
 * Some duplication is expected;
 
 * Probably not as much as to make e.g. ZFS dedup worth its overhead,
-  or the target filesystem is not ZFS (e.g. preparing a distro ISO);
+  or the target filesystem is not ZFS to begin with (e.g. preparing
+  a distro ISO);
 
 * Files are not expected to change;
 
