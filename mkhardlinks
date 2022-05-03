@@ -20,7 +20,7 @@
 ### and '-type f' to not follow symlinks, but things can happen...
 
 #MKH_BASEDIR=/u01/s01/dvd/s0/Solaris_10/Product
-[ "x$MKH_BASEDIR" = x ] && MKH_BASEDIR=/export/home/jim/sol10uX-COS
+[ "x$MKH_BASEDIR" = x ] && MKH_BASEDIR=/export/ftp
 
 ### gdiff is much faster on Solaris (4x on sfv240 test), if available
 [ x"$DIFF" = x ] && DIFF='gdiff -q'

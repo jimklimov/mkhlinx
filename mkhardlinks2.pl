@@ -60,7 +60,7 @@ if ( "$MKH_CONSIDER_METADATA" eq "" ) {
 ### Dir under which we do the work
 if ( "$MKH_BASEDIR" eq "" ) {
     $MKH_BASEDIR = `pwd`; chomp $MKH_BASEDIR;
-    # $MKH_BASEDIR = "/export/home/jim/sol10uX-COS";
+    # $MKH_BASEDIR = "/export/ftp";
     # $MKH_BASEDIR = "/u01/s01/dvd/s0/Solaris_10/Product";
 }
 
