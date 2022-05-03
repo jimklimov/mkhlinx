@@ -255,6 +255,11 @@ Currently only the first one was actually implemented.
 
 ==== Phase 1: Discovery
 
+The goal of this phase is to quickly catalogue all files of interest,
+and to save info about them in a structured manner; then another
+phase would look into discovered files of the same size to checksum
+and otherwise compare them as candidates for a "merge" into one inode.
+
 * Find all files and link them (if new) to the database directory
   and a backlink text file
 
@@ -263,11 +268,25 @@ that in the latest revision of the script as of this writing, it
 did not involve actual checksum comparisons, but dealt so far with
 the construction of the `.hlinx` directory tree based on filesystem
 metadata seen with `lstat()`, which is less intensive on resources.
-The goal of this phase is to quickly catalogue all files of interest,
-and to save info about them in a structured manner; then another
-phase would look into discovered files of the same size to checksum
-and otherwise compare them as candidates for a "merge" into one inode.
 
+The Discovery phase hardlinks existing filesystem objects to files
+with structured names like:
+----
+-rwxrwx--- 2 root root 7609029690 Aug  5  2016 's=7609029690.i=347654.c=_.t=1470372347.link'
+----
+in directories named like `.hlinx/GB/7/` (for the 7-gigabyte file
+size range).
+
+The structured name currently includes:
+
+* a `s=` size (easy to group same-sized files by just listing the
+  directory, and to detect that data got obsoleted);
+* an `i=` inode number (make sure this entry points where intended,
+  can go wild e.g. after `rsync` of a filesystem to another storage);
+* a `c=` checksum (initially empty; to be filled when we inspect the
+  different files with same sizes);
+* a `t=` timestamp (to quickly check if the file was changed since
+  original discovery).
 
 ==== Phase 2: Quick clean-up
 
